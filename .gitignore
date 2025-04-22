@@ -1,2 +1,4 @@
 .idea/
 identity.json
+js/node_modules/
+js/dist/

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/main.js",
+    "start": "node dist/index.js",
     "all": "npm run build && npm run start"
   },
   "devDependencies": {
@@ -15,9 +15,8 @@
   },
   "dependencies": {
     "@hpke/common": "^1.7.2",
-    "@hpke/core": "^1.0.0",
+    "@hpke/core": "^1.7.2",
     "@hpke/dhkem-x25519": "^1.6.2",
-    "@stablelib/ed25519": "^2.0.2",
     "node-fetch": "^3.3.2"
   }
 }

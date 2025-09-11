@@ -7,11 +7,11 @@ import {
 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 import fetch from 'node-fetch';
-import * as ed25519 from '@stablelib/ed25519';
 
 class StransportClient {
     private serverUrl: string;
     private suite: CipherSuite;
+    private keyPair!: CryptoKeyPair;
 
     constructor(serverUrl: string) {
         this.serverUrl = serverUrl;
@@ -20,6 +20,10 @@ class StransportClient {
             kdf: new HkdfSha256(),
             aead: new Aes256Gcm(),
         });
+    }
+
+    async initialize(): Promise<void> {
+        this.keyPair = await this.suite.kem.generateKeyPair();
     }
 
     async getServerPublicKey(): Promise<CryptoKey> {
@@ -36,7 +40,7 @@ class StransportClient {
         if (keyData.byteLength !== 32) {
             throw new Error('Invalid public key length');
         }
-        const key = await this.suite.kem.importKey("raw", ed25519.convertPublicKeyToX25519(new Uint8Array(keyData)), true);
+        const key = await this.suite.kem.importKey("raw", keyData, true);
         return key;
     }
 
@@ -48,19 +52,29 @@ class StransportClient {
         const sender = await this.suite.createSenderContext(senderParams);
 
         const encrypted = await sender.seal(new TextEncoder().encode(message));
+        
         const response = await fetch(`${this.serverUrl}/secure`, {
             method: 'POST',
-            body: Buffer.from(encrypted)
+            body: Buffer.from(encrypted),
+            headers: {
+                'Tinfoil-Client-Public-Key': hexEncode(await this.suite.kem.serializePublicKey(this.keyPair.publicKey)),
+                'Tinfoil-Encapsulated-Key': hexEncode(sender.enc)
+            }
         });
 
         if (!response.ok) {
             throw new Error(`Failed to send secure message: ${response.statusText}`);
         }
 
+        const serverEncapKey = response.headers.get('Tinfoil-Encapsulated-Key');
+        if (!serverEncapKey) {
+            throw new Error('Missing server encapsulated key in response');
+        }
+
         const encryptedResponse = new Uint8Array(await response.arrayBuffer());
         const recipientParams: RecipientContextParams = {
-            recipientKey: serverPublicKey,
-            enc: sender.enc
+            recipientKey: this.keyPair.privateKey,
+            enc: hexDecode(serverEncapKey)
         };
         const recipient = await this.suite.createRecipientContext(recipientParams);
 
@@ -78,7 +92,9 @@ class StransportClient {
         const response = await fetch(`${this.serverUrl}/stream`, {
             method: 'GET',
             headers: {
-                'Accept': 'text/plain'
+                'Accept': 'text/plain',
+                'Tinfoil-Client-Public-Key': hexEncode(await this.suite.kem.serializePublicKey(this.keyPair.publicKey)),
+                'Tinfoil-Encapsulated-Key': hexEncode(sender.enc)
             }
         });
 
@@ -90,16 +106,20 @@ class StransportClient {
             throw new Error('Response body is null');
         }
 
+        const serverEncapKey = response.headers.get('Tinfoil-Encapsulated-Key');
+        if (!serverEncapKey) {
+            throw new Error('Missing server encapsulated key in response');
+        }
+
         const recipientParams: RecipientContextParams = {
-            recipientKey: serverPublicKey,
-            enc: sender.enc
+            recipientKey: this.keyPair.privateKey,
+            enc: hexDecode(serverEncapKey)
         };
         const recipient = await this.suite.createRecipientContext(recipientParams);
 
-        const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
-
         return {
             async *[Symbol.asyncIterator]() {
+                const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
                 try {
                     while (true) {
                         const { done, value } = await reader.read();
@@ -109,7 +129,7 @@ class StransportClient {
                             throw new Error('Received null chunk from stream');
                         }
 
-                        const decrypted = await recipient.open(new Uint8Array(value.buffer));
+                        const decrypted = await recipient.open(new Uint8Array(value));
                         yield new TextDecoder().decode(decrypted);
                     }
                 } finally {
@@ -120,9 +140,24 @@ class StransportClient {
     }
 }
 
+function hexEncode(buffer: ArrayBuffer): string {
+    return Array.from(new Uint8Array(buffer))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+}
+
+function hexDecode(hexString: string): ArrayBuffer {
+    const matches = hexString.match(/.{1,2}/g);
+    if (!matches) {
+        throw new Error('Invalid hex string');
+    }
+    return new Uint8Array(matches.map(byte => parseInt(byte, 16))).buffer;
+}
+
 // Example usage
 async function main() {
     const client = new StransportClient('http://localhost:8080');
+    await client.initialize();
     
     try {
         // Test secure message

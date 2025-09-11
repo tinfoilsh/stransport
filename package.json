@@ -1,5 +1,0 @@
-{
-  "dependencies": {
-    "@stablelib/ed25519": "^2.0.2"
-  }
-}
